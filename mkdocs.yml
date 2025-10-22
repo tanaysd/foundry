@@ -1,0 +1,8 @@
+site_name: Foundry
+nav:
+  - Project Overview:
+      - About: about.md
+      - IO: io.md
+  - Governance:
+      - Agents: agents.md
+  - Contributing: contributing.md
