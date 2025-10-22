@@ -7,7 +7,7 @@ import re
 import sys
 from typing import Iterable, Mapping
 
-BRANCH_PATTERN = re.compile(r"^codex/tc-[0-9]{2,3}-[a-z0-9-]+$")
+BRANCH_PATTERN = re.compile(r"^codex/tc-[0-9]{2,3}-[a-z0-9-]+$", re.IGNORECASE)
 ERROR_MESSAGE = (
     "Branch name must match codex/tc-XX-description pattern (e.g., codex/tc-03-openai-adapter)."
 )
