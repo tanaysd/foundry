@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=65.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "foundry-ai"
+version = "0.0.1"
+description = "Local agent foundry: design, build, and evaluate agentic systems."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Foundry Team" }]
+license = "Apache-2.0"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.urls]
+Repository = "https://github.com/foundry-ai/foundry"
+Issues = "https://github.com/foundry-ai/foundry/issues"
+Documentation = "https://foundry.local/docs"
+
+[project.scripts]
+foundry = "foundry.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+packages = ["foundry"]
