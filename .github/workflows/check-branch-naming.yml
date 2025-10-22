@@ -1,0 +1,31 @@
+name: Check branch naming convention
+
+on:
+  push:
+  pull_request:
+    types:
+      - opened
+      - edited
+      - synchronize
+      - ready_for_review
+
+jobs:
+  branch-name:
+    name: Validate branch naming
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR HEAD (not /merge)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Enforce branch naming convention
+        run: python scripts/ci/check_branch_naming.py
+        env:
+          GITHUB_REF_NAME: ${{ github.head_ref || github.ref_name }}

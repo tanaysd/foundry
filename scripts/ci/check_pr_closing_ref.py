@@ -6,7 +6,7 @@ import json
 import os
 import re
 import sys
-from typing import Iterable, Mapping, MutableMapping, Tuple
+from typing import Iterable, Mapping, MutableMapping, Tuple, cast
 
 CLOSING_PATTERN = re.compile(
     r"(?im)\b(close|closes|fix|fixes|resolve|resolves)\s+#\d+\b"
@@ -65,7 +65,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
 
 def load_event(path: str) -> MutableMapping[str, object]:
     with open(path, "r", encoding="utf-8") as file:
-        return json.load(file)
+        return cast(MutableMapping[str, object], json.load(file))
 
 
 def main(argv: Iterable[str] | None = None) -> int:
