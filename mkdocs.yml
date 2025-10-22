@@ -5,4 +5,6 @@ nav:
       - IO: io.md
   - Governance:
       - Agents: agents.md
-  - Contributing: contributing.md
+  - Contributing:
+      - Overview: contributing.md
+      - Branch Naming: contributing/branching.md

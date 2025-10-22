@@ -31,8 +31,8 @@ The goal: reproducibility, composability, and accountability across all agent-dr
 
 3. **Branch naming convention:**  
    ```
-   codex/<task-id>-<slugified-title>
-   # Example: codex/tc-003b-openai-generate-basic
+   codex/tc-XX-description
+   # Example: codex/tc-03-openai-adapter
    ```
 
 4. **Pull Request policy:**  
