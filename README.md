@@ -8,6 +8,10 @@ Local agent foundry: design, build, and evaluate agentic systems.
 
 Foundry is a modular, local-first framework for developing and evaluating agentic systems. It unifies schema definitions, adapters, evaluation harnesses, and observability tooling into a reproducible, test-driven workflow.
 
+## Agent Operations Manual
+
+See [AGENTS.md](./AGENTS.md) for Codex & AI contributor workflow.
+
 ## Features
 
 - Type-safe schemas that define a shared contract between agents and tools.
