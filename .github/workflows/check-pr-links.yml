@@ -1,0 +1,25 @@
+name: Check PR closing references
+
+on:
+  pull_request:
+    types:
+      - opened
+      - edited
+      - synchronize
+      - ready_for_review
+
+jobs:
+  validate:
+    name: Validate closing reference
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Verify closing reference
+        run: python scripts/ci/check_pr_closing_ref.py
