@@ -58,3 +58,33 @@ Tool support layers on top of the baseline adapter via the `ToolSpec` and
 Together, these behaviors ensure the non-streaming tool pathway is type-safe,
 deterministic, and backed by unit plus contract tests that keep Foundry and
 provider semantics aligned.
+
+## Streaming Event Schema
+
+Streaming adapters standardize incremental updates through a small set of
+canonical events defined in `foundry.core.adapters.stream`:
+
+- `TokenEvent` — textual deltas emitted as the assistant streams a reply. Each
+  event carries the partial `content` along with an `index` indicating its
+  order.
+- `ToolCallEvent` — incremental tool invocation payloads. The `args_fragment`
+  accumulates JSON chunks until `is_final=True` signals the complete call.
+- `ToolResultEvent` — responses produced by previously announced tool calls.
+- `FinalEvent` — the terminal assistant message plus optional `total_tokens`
+  accounting metadata.
+
+A provider-specific `StreamNormalizer` converts raw transport chunks into a
+`List[StreamEvent]` (a union of the above dataclasses). The
+`BaseStreamIterator` consumes those chunks and buffers normalized events so that
+`async for` consumers observe a deterministic sequence regardless of how the
+provider batches updates. The iterator:
+
+1. Requests raw chunks via the subclass-provided `_get_next_chunk()` method.
+2. Awaits the normalizer's `normalize_chunk()` coroutine and enqueues the
+   resulting events.
+3. Automatically calls `close()` once a `FinalEvent` is emitted or the provider
+   signals exhaustion, guaranteeing that adapters release underlying resources.
+
+This shared scaffolding keeps streaming adapters lightweight—future
+implementations only need to provide a chunk source and normalizer to integrate
+with the broader Foundry event pipeline.
