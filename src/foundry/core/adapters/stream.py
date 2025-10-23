@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import abc
 import asyncio
+import inspect
 from collections import deque
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Deque, Dict, List, Optional, Protocol, Union
@@ -202,4 +203,36 @@ async def replay_stream(iterator: BaseStreamIterator) -> List[StreamEvent]:
     finally:
         await iterator.close()
     return events
+
+
+async def replay_events(events: AsyncIterator[StreamEvent]) -> str:
+    """Concatenate TokenEvent fragments and FinalEvent output into a single string."""
+
+    fragments: List[str] = []
+    final_output: Optional[str] = None
+    closers = []
+
+    for closer_name in ("close", "aclose"):
+        closer = getattr(events, closer_name, None)
+        if closer is not None and callable(closer):
+            closers.append(closer)
+
+    try:
+        async for event in events:
+            if isinstance(event, TokenEvent):
+                fragments.append(event.content)
+            elif isinstance(event, FinalEvent):
+                final_output = event.output
+    finally:
+        for closer in closers:
+            result = closer()
+            if inspect.isawaitable(result):
+                await result
+
+    token_output = "".join(fragments)
+    if final_output is None:
+        return token_output
+    if token_output and token_output != final_output:
+        return token_output + final_output
+    return final_output
 
