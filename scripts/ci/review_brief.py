@@ -15,6 +15,11 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Sequence
 
+CURRENT_FILE = Path(__file__).resolve()
+REPO_ROOT = CURRENT_FILE.parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from scripts.ci.diff_api_surface import (
     ApiDiff,
     compute_api_diff,
