@@ -69,7 +69,7 @@ def test_generate_rejects_empty_messages() -> None:
         adapter.generate([])
 
 
-def test_generate_rejects_streaming_and_tools() -> None:
+def test_generate_rejects_streaming_option() -> None:
     response = {
         "choices": [
             {"message": {"role": "assistant", "content": "noop"}},
@@ -78,9 +78,6 @@ def test_generate_rejects_streaming_and_tools() -> None:
     client = build_fake_client(response)
     adapter = OpenAIAdapter(client, default_model="gpt-4o-mini")
     prompt = [Message(role=MessageRole.USER, content="Hello")]
-
-    with pytest.raises(AdapterError):
-        adapter.generate(prompt, tools=[{"name": "foo"}])
 
     with pytest.raises(AdapterError):
         adapter.generate(prompt, stream=True)

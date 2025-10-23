@@ -7,15 +7,26 @@ from typing import Any
 
 from ..errors import AdapterError
 from ..message import Message, MessageRole
+from .toolbridge import normalize_tool_calls, tool_call_to_openai
 
 _ROLE_VALUES = {role.value for role in MessageRole}
-_ALLOWED_KEYS = {"role", "content"}
+_ALLOWED_KEYS = {"role", "content", "tool_calls"}
 
 
-def messages_to_openai(messages: Sequence[Message]) -> list[dict[str, str]]:
+def messages_to_openai(messages: Sequence[Message]) -> list[dict[str, Any]]:
     """Convert Foundry messages into the OpenAI Chat API format."""
 
-    return [{"role": message.role.value, "content": message.content} for message in messages]
+    converted: list[dict[str, Any]] = []
+    for message in messages:
+        payload: dict[str, Any] = {
+            "role": message.role.value,
+            "content": message.content,
+        }
+        if message.tool_calls:
+            payload["tool_calls"] = [tool_call_to_openai(call) for call in message.tool_calls]
+        converted.append(payload)
+
+    return converted
 
 
 def openai_to_messages(payload: Sequence[Mapping[str, Any] | Any]) -> list[Message]:
@@ -40,15 +51,33 @@ def openai_to_messages(payload: Sequence[Mapping[str, Any] | Any]) -> list[Messa
             msg = f"unsupported role '{raw_role}'"
             raise AdapterError(msg)
 
-        content = mapping.get("content")
-        if not isinstance(content, str):
+        raw_content = mapping.get("content", "")
+        if raw_content is None:
+            content = ""
+        elif isinstance(raw_content, str):
+            content = raw_content
+        else:
             msg = "message content must be a string"
             raise AdapterError(msg)
-        if content == "":
+
+        tool_calls_payload = mapping.get("tool_calls")
+        tool_calls = None
+        if tool_calls_payload is not None:
+            if not isinstance(tool_calls_payload, Sequence) or isinstance(
+                tool_calls_payload, (str, bytes, bytearray)
+            ):
+                msg = "tool_calls must be provided as a sequence"
+                raise AdapterError(msg)
+            tool_calls_tuple = normalize_tool_calls(tool_calls_payload)
+            tool_calls = tool_calls_tuple or None
+
+        if content == "" and tool_calls is None:
             msg = "message content cannot be empty"
             raise AdapterError(msg)
 
-        normalized.append(Message(role=MessageRole(normalized_role), content=content))
+        normalized.append(
+            Message(role=MessageRole(normalized_role), content=content, tool_calls=tool_calls)
+        )
 
     return normalized
 
