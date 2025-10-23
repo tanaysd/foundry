@@ -117,3 +117,28 @@ The helper guarantees a stable list of events on every invocation, making it
 ideal for contract tests that assert ordering, tool progression, and final
 payload parity.
 
+## OpenAI Streaming Adapter
+
+`OpenAIAdapter.stream()` now wires the real OpenAI client into the canonical
+event pipeline by returning an `OpenAIStreamIterator`. The iterator wraps the
+SDK's async stream, validates every chunk, and normalizes deltas via
+`OpenAIStreamNormalizer`:
+
+- **Token fragments** are emitted as `TokenEvent` instances with deterministic
+  indexes and accumulated into the final assistant output.
+- **Tool calls** are tracked incrementally. The normalizer enforces that ids and
+  function names arrive before arguments and marks the final fragment when
+  `finish_reason == "tool_calls"`.
+- **Tool results** can be injected as `{"tool_result": ...}` chunks and surface
+  as `ToolResultEvent` objects, allowing downstream orchestration to remain
+  provider-agnostic.
+- **Final events** capture the consolidated response along with optional token
+  usage metadata. If no post-tool tokens stream, the final output falls back to
+  the latest tool result payload to mirror Foundry's canonical mocks.
+
+Deterministic unit tests (`tests/adapters/test_openai_streaming_adapter.py`)
+exercise both a token-only flow and a tool-call scenario, asserting parity with
+`MockStreamIterator`. This keeps the adapter offline-testable while guaranteeing
+that real streams match the canonical schema relied upon by higher-level
+contract tests.
+
