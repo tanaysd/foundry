@@ -1,0 +1,54 @@
+name: PR Review Brief
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+      - edited
+
+jobs:
+  review-brief:
+    name: Generate Review Brief
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[dev]" pytest-cov
+
+      - name: Run tests with coverage
+        run: |
+          pytest -q --maxfail=1 --disable-warnings --cov=src --cov-report=xml || true
+
+      - name: Coverage gate (warn-only)
+        run: |
+          python scripts/ci/coverage_gate.py --coverage coverage.xml --files $(git diff --name-only ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}) || true
+
+      - name: Generate review brief
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python scripts/ci/review_brief.py \
+            --base ${{ github.event.pull_request.base.sha }} \
+            --head ${{ github.event.pull_request.head.sha }} \
+            --pr ${{ github.event.pull_request.number }} \
+            --repo ${{ github.repository }} > brief.md
+
+      - name: Publish review brief comment
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          body-file: brief.md
