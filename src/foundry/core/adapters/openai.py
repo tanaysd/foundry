@@ -1,4 +1,4 @@
-"""OpenAI provider adapter (non-streaming, no tools)."""
+"""OpenAI provider adapter (non-streaming with tool support)."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from typing import Any
 from ..errors import AdapterError
 from ..message import Message, MessageRole
 from .base import ModelAdapter
+from .toolbridge import ToolSpec, tool_specs_to_openai
 from .utils import messages_to_openai, openai_to_messages
 
 
@@ -45,9 +46,6 @@ class OpenAIAdapter(ModelAdapter):
         stream: bool = False,
         **options: Any,
     ) -> Message:
-        if tools not in (None, [], {}):
-            msg = "tool calling is not supported"
-            raise AdapterError(msg)
         if stream:
             msg = "streaming is not supported"
             raise AdapterError(msg)
@@ -57,7 +55,14 @@ class OpenAIAdapter(ModelAdapter):
 
         model_name = self._resolve_model(options)
 
-        request_payload = self._build_payload(messages, model_name, options)
+        prepared_tools = self._prepare_tools(tools)
+
+        request_payload = self._build_payload(
+            messages,
+            model_name,
+            options,
+            tools=prepared_tools,
+        )
 
         try:
             response = self._client.chat.completions.create(**request_payload)
@@ -88,17 +93,35 @@ class OpenAIAdapter(ModelAdapter):
         messages: Sequence[Message],
         model_name: str,
         options: Mapping[str, Any],
+        *,
+        tools: list[dict[str, Any]] | None,
     ) -> dict[str, Any]:
         request_payload: dict[str, Any] = {"model": model_name, **self._default_params}
         for key, value in options.items():
-            if key in {"messages", "stream"}:
+            if key in {"messages", "stream", "tools"}:
                 msg = f"option '{key}' is managed by the adapter"
                 raise AdapterError(msg)
             request_payload[key] = value
 
         request_payload.setdefault("temperature", 0)
         request_payload["messages"] = messages_to_openai(messages)
+        if tools:
+            request_payload["tools"] = tools
         return request_payload
+
+    def _prepare_tools(self, tools: Sequence[ToolSpec] | None) -> list[dict[str, Any]] | None:
+        if tools in (None, [], ()):  # treat empty as absent
+            return None
+
+        if isinstance(tools, Mapping):
+            msg = "tools must be a sequence of ToolSpec instances"
+            raise AdapterError(msg)
+
+        if not isinstance(tools, Sequence) or isinstance(tools, (str, bytes, bytearray)):
+            msg = "tools must be a sequence of ToolSpec instances"
+            raise AdapterError(msg)
+
+        return tool_specs_to_openai(tools)
 
     def _extract_first_choice(self, response: Any) -> Any:
         choices = None

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from .errors import AdapterError
-from .message import Message, MessageRole
+from .message import Message, MessageRole, ToolCall
+from .adapters.toolbridge import ToolSpec
 
 __all__ = [
     "AdapterError",
     "Message",
     "MessageRole",
+    "ToolCall",
+    "ToolSpec",
 ]

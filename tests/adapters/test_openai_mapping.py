@@ -43,3 +43,30 @@ def test_openai_to_messages_rejects_extra_fields() -> None:
         openai_to_messages([
             {"role": "assistant", "content": "hello", "foo": "bar"},
         ])
+
+
+def test_openai_to_messages_accepts_tool_calls_with_empty_content() -> None:
+    payload = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_tool",
+                    "type": "function",
+                    "function": {
+                        "name": "summarize",
+                        "arguments": "{\"topic\": \"status\"}",
+                    },
+                }
+            ],
+        }
+    ]
+
+    [message] = openai_to_messages(payload)
+
+    assert message.content == ""
+    assert message.tool_calls is not None
+    [tool_call] = message.tool_calls
+    assert tool_call.name == "summarize"
+    assert tool_call.arguments["topic"] == "status"
