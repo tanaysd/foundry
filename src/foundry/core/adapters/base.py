@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from ..message import Message
+from .stream import BaseStreamIterator
 
 
 class ModelAdapter(ABC):
@@ -23,3 +24,14 @@ class ModelAdapter(ABC):
         **options: Any,
     ) -> Message:
         """Generate an assistant message from the provided conversation history."""
+
+    @abstractmethod
+    def stream(
+        self,
+        messages: Sequence[Message],
+        /,
+        *,
+        tools: Any | None = None,
+        **options: Any,
+    ) -> BaseStreamIterator:
+        """Return an async iterator that yields canonical streaming events."""
