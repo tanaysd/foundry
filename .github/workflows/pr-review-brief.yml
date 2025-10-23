@@ -42,6 +42,11 @@ jobs:
         run: |
           python scripts/ci/coverage_gate.py --coverage coverage.xml --files $(git diff --name-only ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}) || true
 
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0   # 👈 ensure full history so we can diff base vs head
+
       - name: Generate review brief
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
