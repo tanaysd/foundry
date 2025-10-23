@@ -88,3 +88,32 @@ provider batches updates. The iterator:
 This shared scaffolding keeps streaming adapters lightweight—future
 implementations only need to provide a chunk source and normalizer to integrate
 with the broader Foundry event pipeline.
+
+## Mock Streaming Client
+
+For deterministic tests and local iteration, `MockStreamIterator` replays canned
+`StreamEvent` sequences without touching external APIs. Each scenario is
+constructed via `_make_events()` inside `foundry.core.adapters.stream` and uses
+`await asyncio.sleep(0)` to mimic cooperative async scheduling while remaining
+blazing fast.
+
+| Scenario | Event Timeline | Final Output |
+| --- | --- | --- |
+| `"simple"` | `TokenEvent("Hello")` → `TokenEvent(", world")` → `FinalEvent` | `Hello, world` |
+| `"tool_call"` | `TokenEvent("Calling calculator")` → `ToolCallEvent` (args streamed over two fragments) → `ToolResultEvent` → `FinalEvent` | `Sum is 4` |
+
+### Example Replay Helper
+
+```python
+from foundry.core.adapters.stream import MockStreamIterator, replay_stream
+
+async def demo() -> None:
+    events = await replay_stream(MockStreamIterator("tool_call"))
+    for event in events:
+        print(event)
+```
+
+The helper guarantees a stable list of events on every invocation, making it
+ideal for contract tests that assert ordering, tool progression, and final
+payload parity.
+

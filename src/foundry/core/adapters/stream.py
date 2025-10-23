@@ -138,3 +138,68 @@ class StreamNormalizer(Protocol):
     async def normalize_chunk(self, chunk: Dict[str, Any]) -> List[StreamEvent]:
         """Map a provider-specific chunk into canonical stream events."""
 
+
+class _MockStreamNormalizer(StreamNormalizer):
+    async def normalize_chunk(self, chunk: Dict[str, Any]) -> List[StreamEvent]:
+        events = chunk.get("events", [])
+        return list(events)
+
+
+class MockStreamIterator(BaseStreamIterator):
+    """Deterministic in-memory stream iterator for testing pipelines."""
+
+    def __init__(self, scenario: str = "simple") -> None:
+        self._scenario = scenario
+        self._events: Deque[StreamEvent] = deque(self._make_events(scenario))
+        super().__init__(_MockStreamNormalizer())
+
+    async def _get_next_chunk(self) -> Dict[str, Any]:
+        await asyncio.sleep(0)
+        if not self._events:
+            raise StopAsyncIteration
+        event = self._events.popleft()
+        return {"events": [event]}
+
+    async def close(self) -> None:
+        await super().close()
+
+    @classmethod
+    def _make_events(cls, scenario: str) -> List[StreamEvent]:
+        if scenario == "simple":
+            return [
+                TokenEvent(content="Hello", index=0),
+                TokenEvent(content=", world", index=1),
+                FinalEvent(output="Hello, world", total_tokens=4),
+            ]
+        if scenario == "tool_call":
+            return [
+                TokenEvent(content="Calling calculator", index=0),
+                ToolCallEvent(
+                    id="tool-1",
+                    name="sum",
+                    args_fragment="{\"a\": 1",
+                    is_final=False,
+                ),
+                ToolCallEvent(
+                    id="tool-1",
+                    name="sum",
+                    args_fragment=", \"b\": 3}",
+                    is_final=True,
+                ),
+                ToolResultEvent(id="tool-1", output="Sum is 4"),
+                FinalEvent(output="Sum is 4", total_tokens=6),
+            ]
+        raise ValueError(f"Unknown mock streaming scenario: {scenario!r}")
+
+
+async def replay_stream(iterator: BaseStreamIterator) -> List[StreamEvent]:
+    """Collect all events emitted by a stream iterator."""
+
+    events: List[StreamEvent] = []
+    try:
+        async for event in iterator:
+            events.append(event)
+    finally:
+        await iterator.close()
+    return events
+
