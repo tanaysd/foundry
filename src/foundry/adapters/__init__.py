@@ -10,6 +10,7 @@ from .base import (
     AdapterStreamError,
 )
 from .openai_adapter import OpenAIAdapter
+from .template_provider_adapter import TemplateProviderAdapter, TemplateProviderChunk
 
 __all__ = [
     "AdapterStreamError",
@@ -17,6 +18,8 @@ __all__ = [
     "BaseEvent",
     "FinalEvent",
     "OpenAIAdapter",
+    "TemplateProviderAdapter",
+    "TemplateProviderChunk",
     "TokenEvent",
     "ToolCallEvent",
     "ToolResultEvent",
