@@ -50,12 +50,14 @@ jobs:
       - name: Generate review brief
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        working-directory: ${{ github.workspace }}
         run: |
           python scripts/ci/review_brief.py \
             --base ${{ github.event.pull_request.base.sha }} \
             --head ${{ github.event.pull_request.head.sha }} \
-            --pr ${{ github.event.pull_request.number }} \
+            --pr   ${{ github.event.pull_request.number }} \
             --repo ${{ github.repository }} > brief.md
+
 
       - name: Publish review brief comment
         uses: peter-evans/create-or-update-comment@v4
