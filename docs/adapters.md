@@ -1,144 +1,121 @@
-# Adapters
+# Adapter Layer
 
-## OpenAI mapping (non-streaming)
+Foundry's adapter layer translates provider-specific streaming payloads into a
+canonical sequence of events that downstream components can consume without
+knowing which SDK produced them. The OpenAI adapter is the first concrete
+implementation and acts as the template for future providers.
 
-Foundry's OpenAI adapter focuses on deterministic message translation and a
-minimal `generate()` implementation that works with a fake client. The
-implementation avoids network access and streaming support. Instead, it
-concentrates on the following guarantees:
+## Canonical Streaming Contract
 
-- **Strict schema:** Messages are represented by the `Message` model, which
-  enforces one of three roles (`system`, `user`, `assistant`) and requires
-  non-empty string content. The converters reject any additional provider
-  fields to ensure JSON round-trips stay deterministic.
-- **Pure converters:** `messages_to_openai()` transforms a sequence of Foundry
-  messages into OpenAI's chat completion payload, while `openai_to_messages()`
-  performs the inverse. Each helper validates roles and content and raises an
-  `AdapterError` if data falls outside the supported schema.
-- **Deterministic requests:** `OpenAIAdapter.generate()` injects
-  `temperature=0` unless explicitly overridden, prevents caller supplied
-  `messages`/`stream` overrides, and raises an error when streaming is
-  requested.
-- **Fake client friendly:** Tests construct a fake client exposing
-  `chat.completions.create(**kwargs)`. The adapter returns the first assistant
-  message from the response and surfaces malformed responses via `AdapterError`
-  for deterministic failure handling.
-
-These primitives establish a baseline for additional capabilities—such as tool
-calling and streaming—to be layered on in future tasks while keeping core
-behavior predictable and well tested.
-
-## Function/Tool calling (non-streaming)
-
-Tool support layers on top of the baseline adapter via the `ToolSpec` and
-`ToolCall` primitives:
-
-- **Declarative tool specs:** `ToolSpec` captures the canonical name,
-  description, and JSON-schema parameters for a tool. Specifications are
-  validated for JSON compatibility, required/optional coherence, and naming
-  rules before being converted into provider payloads.
-- **Provider mapping:** `tool_specs_to_openai()` maps `ToolSpec` instances to
-  OpenAI's `type=function` schema, thawing the immutable parameter structure
-  into JSON-serializable dictionaries. Duplicate tool names and malformed
-  schemas raise `AdapterError` immediately.
-- **Tool call normalization:** `normalize_tool_calls()` converts provider
-  `tool_call` payloads into immutable `ToolCall` records. Arguments are parsed
-  from JSON, validated for structure, and frozen to ensure deterministic
-  comparisons across adapters.
-- **Message conversions:** `messages_to_openai()`/`openai_to_messages()` now
-  include tool call payloads. Assistant messages may carry empty textual
-  content when tool invocations are present, and round-tripping preserves the
-  normalized `ToolCall` tuples.
-- **Adapter integration:** When `tools=[ToolSpec, ...]` is supplied to
-  `OpenAIAdapter.generate()`, the adapter injects the mapped tool definitions
-  into the request and normalizes the resulting tool calls into the returned
-  assistant message. Invalid tool responses propagate as `AdapterError` for
-  deterministic failure handling.
-
-Together, these behaviors ensure the non-streaming tool pathway is type-safe,
-deterministic, and backed by unit plus contract tests that keep Foundry and
-provider semantics aligned.
-
-## Streaming Event Schema
-
-Streaming adapters standardize incremental updates through a small set of
-canonical events defined in `foundry.core.adapters.stream`:
-
-- `TokenEvent` — textual deltas emitted as the assistant streams a reply. Each
-  event carries the partial `content` along with an `index` indicating its
-  order.
-- `ToolCallEvent` — incremental tool invocation payloads. The `args_fragment`
-  accumulates JSON chunks until `is_final=True` signals the complete call.
-- `ToolResultEvent` — responses produced by previously announced tool calls.
-- `FinalEvent` — the terminal assistant message plus optional `total_tokens`
-  accounting metadata.
-
-A provider-specific `StreamNormalizer` converts raw transport chunks into a
-`List[StreamEvent]` (a union of the above dataclasses). The
-`BaseStreamIterator` consumes those chunks and buffers normalized events so that
-`async for` consumers observe a deterministic sequence regardless of how the
-provider batches updates. The iterator:
-
-1. Requests raw chunks via the subclass-provided `_get_next_chunk()` method.
-2. Awaits the normalizer's `normalize_chunk()` coroutine and enqueues the
-   resulting events.
-3. Automatically calls `close()` once a `FinalEvent` is emitted or the provider
-   signals exhaustion, guaranteeing that adapters release underlying resources.
-
-This shared scaffolding keeps streaming adapters lightweight—future
-implementations only need to provide a chunk source and normalizer to integrate
-with the broader Foundry event pipeline.
-
-## Mock Streaming Client
-
-For deterministic tests and local iteration, `MockStreamIterator` replays canned
-`StreamEvent` sequences without touching external APIs. Each scenario is
-constructed via `_make_events()` inside `foundry.core.adapters.stream` and uses
-`await asyncio.sleep(0)` to mimic cooperative async scheduling while remaining
-blazing fast.
-
-| Scenario | Event Timeline | Final Output |
-| --- | --- | --- |
-| `"simple"` | `TokenEvent("Hello")` → `TokenEvent(", world")` → `FinalEvent` | `Hello, world` |
-| `"tool_call"` | `TokenEvent("Calling calculator")` → `ToolCallEvent` (args streamed over two fragments) → `ToolResultEvent` → `FinalEvent` | `Sum is 4` |
-
-### Example Replay Helper
+Adapters implement the `BaseAdapter` protocol:
 
 ```python
-from foundry.core.adapters.stream import MockStreamIterator, replay_stream
+from collections.abc import AsyncIterator
+from foundry.adapters import BaseAdapter, BaseEvent
 
-async def demo() -> None:
-    events = await replay_stream(MockStreamIterator("tool_call"))
-    for event in events:
-        print(event)
+class ProviderAdapter(BaseAdapter):
+    def stream(self, prompt: str, **kwargs: object) -> AsyncIterator[BaseEvent]:
+        ...
 ```
 
-The helper guarantees a stable list of events on every invocation, making it
-ideal for contract tests that assert ordering, tool progression, and final
-payload parity.
+Calling `stream()` returns an async iterator that yields only canonical events.
+Each event carries deterministic metadata:
+
+| Field | Description |
+| --- | --- |
+| `seq_id` | Strictly monotonic sequence counter starting at `0`. |
+| `ts` | Deterministic timestamp derived from a stable clock origin. |
+
+Four concrete dataclasses model streaming activity:
+
+- `TokenEvent(seq_id, ts, content, index)` — incremental assistant tokens.
+- `ToolCallEvent(seq_id, ts, call_id, name, args)` — normalized tool
+  invocations. All argument fragments are merged and parsed into a single JSON
+  object.
+- `ToolResultEvent(seq_id, ts, call_id, output)` — tool outputs emitted after a
+  `ToolCallEvent`.
+- `FinalEvent(seq_id, ts, output, finish_reason, usage)` — terminal event. Exactly
+  one final event is produced per stream.
+
+No provider-specific payloads escape the adapter boundary; downstream code only
+sees these dataclasses.
+
+## Deterministic Sequencing
+
+Two small utilities keep ordering and timestamps stable:
+
+- `monotonic_seq()` yields strictly increasing integers. Every stream receives a
+  fresh counter, guaranteeing deterministic replay.
+- `stable_ts()` returns timestamps relative to a fixed origin (`2024-01-01Z`) in
+  one millisecond increments. The function is side-effect free, enabling
+  repeatable tests.
+
+Both helpers live in `foundry.adapters.openai_adapter` and can be reused by
+future providers.
 
 ## OpenAI Streaming Adapter
 
-`OpenAIAdapter.stream()` now wires the real OpenAI client into the canonical
-event pipeline by returning an `OpenAIStreamIterator`. The iterator wraps the
-SDK's async stream, validates every chunk, and normalizes deltas via
-`OpenAIStreamNormalizer`:
+`OpenAIAdapter` wires the OpenAI Chat Completions streaming API into the
+canonical contract. Highlights:
 
-- **Token fragments** are emitted as `TokenEvent` instances with deterministic
-  indexes and accumulated into the final assistant output.
-- **Tool calls** are tracked incrementally. The normalizer enforces that ids and
-  function names arrive before arguments and marks the final fragment when
-  `finish_reason == "tool_calls"`.
-- **Tool results** can be injected as `{"tool_result": ...}` chunks and surface
-  as `ToolResultEvent` objects, allowing downstream orchestration to remain
-  provider-agnostic.
-- **Final events** capture the consolidated response along with optional token
-  usage metadata. If no post-tool tokens stream, the final output falls back to
-  the latest tool result payload to mirror Foundry's canonical mocks.
+- **Payload construction:** prompts are turned into the minimal OpenAI message
+  payload and merged with deterministic defaults (`temperature=0`). Tool
+  definitions accept either `ToolSpec` instances or raw provider dictionaries.
+- **Chunk normalization:** every provider chunk is validated and converted into
+  canonical events. Tool calls accumulate argument fragments, merge them when
+  `finish_reason == "tool_calls"`, and surface a single `ToolCallEvent` per
+  invocation. Tool results and token deltas retain causal ordering.
+- **Finalization:** final events record the finish reason and optional token
+  usage (`{"total_tokens": ...}`). Streams close automatically as soon as the
+  `FinalEvent` is emitted or consumers call `aclose()`.
+- **Error isolation:** malformed payloads and provider failures are wrapped in
+  `AdapterStreamError`, ensuring a consistent error surface.
 
-Deterministic unit tests (`tests/adapters/test_openai_streaming_adapter.py`)
-exercise both a token-only flow and a tool-call scenario, asserting parity with
-`MockStreamIterator`. This keeps the adapter offline-testable while guaranteeing
-that real streams match the canonical schema relied upon by higher-level
-contract tests.
+### Test Matrix
 
+The OpenAI adapter ships with deterministic, offline tests backed by a fake
+client (`tests/fixtures/openai_fake.py`):
+
+| Scenario | Covered By | Notes |
+| --- | --- | --- |
+| Token-only response | `tests/test_openai_adapter_parity.py::test_token_only_stream_matches_expected_sequence` | Verifies event ordering, timestamps, and usage metadata. |
+| Tool call flow | `tests/test_openai_adapter_parity.py::test_tool_call_flow_emits_canonical_events` | Confirms argument merging, tool results, and final parity. |
+| Interface contract | `tests/test_openai_adapter_contract.py` | Ensures the adapter satisfies the `BaseAdapter` protocol. |
+| Edge cases | `tests/test_openai_adapter_edges.py` | Covers cancellation, empty outputs, and error propagation. |
+
+All tests run offline via `pytest` and do not contact OpenAI.
+
+## Adding a Provider Adapter
+
+To add a new provider, follow this checklist:
+
+1. **Create the adapter class** under `foundry/adapters/<provider>_adapter.py`.
+   Implement the `BaseAdapter` protocol and expose the class from
+   `foundry/adapters/__init__.py`.
+2. **Translate provider chunks** into canonical events. Reuse `monotonic_seq()`
+   and `stable_ts()` (or equivalents) to keep `seq_id` and `ts` deterministic.
+3. **Normalize tool calls** by buffering argument fragments until the provider
+   marks the call complete. Parse arguments into JSON objects before emitting a
+   `ToolCallEvent`.
+4. **Emit a single `FinalEvent`**. Capture finish reasons and any usage metrics
+   needed for observability.
+5. **Write offline tests** mirroring the scenarios in `tests/test_openai_adapter_*.py`.
+   Provide fake streams or fixtures so CI can run without network access.
+6. **Document provider specifics** in this file, focusing on any differences in
+   chunk structure or additional canonical metadata.
+
+A skeleton test module might look like:
+
+```python
+from foundry.adapters import BaseEvent
+from foundry.adapters.myprovider_adapter import MyProviderAdapter
+
+async def test_myprovider_token_stream(fake_client):
+    adapter = MyProviderAdapter(fake_client, default_model="model")
+    stream = adapter.stream("Prompt")
+    events: list[BaseEvent] = [event async for event in stream]
+    ...
+```
+
+Keeping adapters deterministic and offline-testable ensures Foundry's runtime can
+swap providers, replay sessions, and evaluate behaviors without side effects.
