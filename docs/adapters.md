@@ -1,25 +1,29 @@
 # Adapter Layer
 
 Foundry's adapter layer translates provider-specific streaming payloads into a
-canonical sequence of events that downstream components can consume without
-knowing which SDK produced them. The OpenAI adapter is the first concrete
-implementation and acts as the template for future providers.
+canonical sequence of events. Downstream components consume **only** the
+canonical dataclasses, which keeps the runtime provider-agnostic and enables
+deterministic replay.
 
 ## Canonical Streaming Contract
 
-Adapters implement the `BaseAdapter` protocol:
+Every adapter implements the [`BaseAdapter`](../src/foundry/adapters/base.py)
+protocol:
 
 ```python
 from collections.abc import AsyncIterator
+from typing import Any
+
 from foundry.adapters import BaseAdapter, BaseEvent
 
+
 class ProviderAdapter(BaseAdapter):
-    def stream(self, prompt: str, **kwargs: object) -> AsyncIterator[BaseEvent]:
+    def stream(self, prompt: str, /, **kwargs: Any) -> AsyncIterator[BaseEvent]:
         ...
 ```
 
-Calling `stream()` returns an async iterator that yields only canonical events.
-Each event carries deterministic metadata:
+Calling `stream()` returns an async iterator that yields canonical events with
+deterministic metadata:
 
 | Field | Description |
 | --- | --- |
@@ -34,47 +38,38 @@ Four concrete dataclasses model streaming activity:
   object.
 - `ToolResultEvent(seq_id, ts, call_id, output)` — tool outputs emitted after a
   `ToolCallEvent`.
-- `FinalEvent(seq_id, ts, output, finish_reason, usage)` — terminal event. Exactly
-  one final event is produced per stream.
+- `FinalEvent(seq_id, ts, output, finish_reason, usage)` — terminal event.
+  Exactly one final event is produced per stream.
 
-No provider-specific payloads escape the adapter boundary; downstream code only
-sees these dataclasses.
+Provider payloads never escape the adapter boundary; everything is projected
+into these dataclasses.
 
-## Deterministic Sequencing
+### Determinism Guarantees
 
-Two small utilities keep ordering and timestamps stable:
+Adapters use deterministic helpers to keep ordering stable:
 
-- `monotonic_seq()` yields strictly increasing integers. Every stream receives a
-  fresh counter, guaranteeing deterministic replay.
-- `stable_ts()` returns timestamps relative to a fixed origin (`2024-01-01Z`) in
-  one millisecond increments. The function is side-effect free, enabling
+- `monotonic_seq()` yields strictly increasing integers. Each stream receives a
+  fresh counter, guaranteeing reproducible `seq_id` ordering.
+- `stable_ts()` returns timestamps relative to a fixed origin (`2024-01-01Z`)
+  in one millisecond increments. The helper is side-effect free, enabling
   repeatable tests.
 
-Both helpers live in `foundry.adapters.openai_adapter` and can be reused by
-future providers.
+The utilities live in `foundry.adapters.openai_adapter` and can be copied or
+reused by future providers.
 
-## OpenAI Streaming Adapter
+### Error Policy
 
-`OpenAIAdapter` wires the OpenAI Chat Completions streaming API into the
-canonical contract. Highlights:
+Any provider failure or malformed payload must be wrapped in
+`AdapterStreamError`. This ensures a consistent surface for the runtime and for
+tests. Adapter implementations should validate all external inputs, including
+tool schemas, streaming chunks, and user-supplied kwargs, before converting
+them into canonical events.
 
-- **Payload construction:** prompts are turned into the minimal OpenAI message
-  payload and merged with deterministic defaults (`temperature=0`). Tool
-  definitions accept either `ToolSpec` instances or raw provider dictionaries.
-- **Chunk normalization:** every provider chunk is validated and converted into
-  canonical events. Tool calls accumulate argument fragments, merge them when
-  `finish_reason == "tool_calls"`, and surface a single `ToolCallEvent` per
-  invocation. Tool results and token deltas retain causal ordering.
-- **Finalization:** final events record the finish reason and optional token
-  usage (`{"total_tokens": ...}`). Streams close automatically as soon as the
-  `FinalEvent` is emitted or consumers call `aclose()`.
-- **Error isolation:** malformed payloads and provider failures are wrapped in
-  `AdapterStreamError`, ensuring a consistent error surface.
+### Test Policy
 
-### Test Matrix
-
-The OpenAI adapter ships with deterministic, offline tests backed by a fake
-client (`tests/fixtures/openai_fake.py`):
+Adapters ship with deterministic, offline tests that rely on fakes or fixtures
+rather than live network calls. The OpenAI adapter's parity suite demonstrates
+the pattern:
 
 | Scenario | Covered By | Notes |
 | --- | --- | --- |
@@ -83,39 +78,46 @@ client (`tests/fixtures/openai_fake.py`):
 | Interface contract | `tests/test_openai_adapter_contract.py` | Ensures the adapter satisfies the `BaseAdapter` protocol. |
 | Edge cases | `tests/test_openai_adapter_edges.py` | Covers cancellation, empty outputs, and error propagation. |
 
-All tests run offline via `pytest` and do not contact OpenAI.
+All scenarios run offline via `pytest` and do not contact OpenAI.
 
-## Adding a Provider Adapter
+## OpenAI Streaming Adapter
 
-To add a new provider, follow this checklist:
+`OpenAIAdapter` wires the OpenAI Chat Completions streaming API into the
+canonical contract. Highlights:
 
-1. **Create the adapter class** under `foundry/adapters/<provider>_adapter.py`.
-   Implement the `BaseAdapter` protocol and expose the class from
-   `foundry/adapters/__init__.py`.
-2. **Translate provider chunks** into canonical events. Reuse `monotonic_seq()`
-   and `stable_ts()` (or equivalents) to keep `seq_id` and `ts` deterministic.
-3. **Normalize tool calls** by buffering argument fragments until the provider
-   marks the call complete. Parse arguments into JSON objects before emitting a
-   `ToolCallEvent`.
-4. **Emit a single `FinalEvent`**. Capture finish reasons and any usage metrics
-   needed for observability.
-5. **Write offline tests** mirroring the scenarios in `tests/test_openai_adapter_*.py`.
-   Provide fake streams or fixtures so CI can run without network access.
-6. **Document provider specifics** in this file, focusing on any differences in
-   chunk structure or additional canonical metadata.
+- **Payload construction:** prompts become the minimal message payload and are
+  merged with deterministic defaults (`temperature=0`). Tool definitions accept
+  either `ToolSpec` instances or raw provider dictionaries.
+- **Chunk normalization:** every provider chunk is validated and converted into
+  canonical events. Tool calls accumulate argument fragments, merge them when
+  `finish_reason == "tool_calls"`, and emit a single `ToolCallEvent` per
+  invocation. Tool results and token deltas retain causal ordering.
+- **Finalization:** final events record the finish reason and optional token
+  usage (`{"total_tokens": ...}`). Streams close automatically as soon as the
+  `FinalEvent` is emitted or consumers call `aclose()`.
+- **Error isolation:** malformed payloads and provider failures are wrapped in
+  `AdapterStreamError`, ensuring a consistent error surface.
 
-A skeleton test module might look like:
+## Provider Integration Checklist
 
-```python
-from foundry.adapters import BaseEvent
-from foundry.adapters.myprovider_adapter import MyProviderAdapter
+Use this checklist when adding a new adapter. It mirrors the CI gate enforced
+for providers:
 
-async def test_myprovider_token_stream(fake_client):
-    adapter = MyProviderAdapter(fake_client, default_model="model")
-    stream = adapter.stream("Prompt")
-    events: list[BaseEvent] = [event async for event in stream]
-    ...
-```
+- [ ] Adapter class lives in `foundry/adapters/<provider>_adapter.py` and is
+      exported from `foundry/adapters/__init__.py`.
+- [ ] `stream()` validates inputs, calls the provider, and yields canonical
+      events with deterministic `seq_id`/`ts` values.
+- [ ] Tool call deltas are buffered until completion and parsed into structured
+      JSON arguments.
+- [ ] All provider errors are wrapped in `AdapterStreamError` and surfaced with
+      actionable messages.
+- [ ] Offline fakes or fixtures back the test suite—no live API calls.
+- [ ] Parity tests exercise token-only, tool-call, and error scenarios via the
+      shared adapter harness.
+- [ ] Documentation in this file explains any provider-specific chunk shape or
+      metadata.
+- [ ] `make lint`, `make type`, and `make test` pass locally.
 
-Keeping adapters deterministic and offline-testable ensures Foundry's runtime can
-swap providers, replay sessions, and evaluate behaviors without side effects.
+Keeping adapters deterministic and offline-testable ensures Foundry's runtime
+can swap providers, replay sessions, and evaluate behaviors without side
+effects.
