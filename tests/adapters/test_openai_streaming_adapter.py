@@ -1,147 +1,54 @@
 from __future__ import annotations
 
 import asyncio
-from collections import deque
-from types import SimpleNamespace
 
-from foundry.core import Message, MessageRole
 from foundry.core.adapters.openai import OpenAIAdapter
-from foundry.core.adapters.stream import (
-    FinalEvent,
-    MockStreamIterator,
-    TokenEvent,
-    replay_stream,
-)
+from foundry.core.adapters.stream import MockStreamIterator, replay_stream
+
+from tests.fixtures import openai_fake
+from tests.harness import BaseEvent, collect
 
 
-class FakeAsyncStream:
-    def __init__(self, chunks: list[dict[str, object]]) -> None:
-        self._chunks: deque[dict[str, object]] = deque(chunks)
-        self.closed = False
-
-    def __aiter__(self) -> FakeAsyncStream:
-        return self
-
-    async def __anext__(self) -> dict[str, object]:
-        if not self._chunks:
-            raise StopAsyncIteration
-        await asyncio.sleep(0)
-        return self._chunks.popleft()
-
-    async def aclose(self) -> None:
-        self.closed = True
-
-
-class FakeCompletions:
-    def __init__(self, stream: FakeAsyncStream) -> None:
-        self._stream = stream
-        self.calls: list[dict[str, object]] = []
-
-    def create(self, **kwargs: object) -> FakeAsyncStream:
-        self.calls.append(kwargs)
-        return self._stream
-
-
-def build_streaming_client(chunks: list[dict[str, object]]) -> tuple[SimpleNamespace, FakeAsyncStream]:
-    stream = FakeAsyncStream(chunks)
-    completions = FakeCompletions(stream)
-    chat = SimpleNamespace(completions=completions)
-    client = SimpleNamespace(chat=chat, completions=completions)
-    return client, stream
-
-
-def _gather_stream_events(adapter: OpenAIAdapter, messages: list[Message]) -> list[object]:
-    iterator = adapter.stream(messages)
-    return asyncio.run(replay_stream(iterator))
+def _build_adapter(chunks: list[dict[str, object]]) -> tuple[OpenAIAdapter, openai_fake.FakeAsyncStream, openai_fake.FakeCompletions]:
+    client, stream = openai_fake.build_streaming_client(chunks)
+    adapter = OpenAIAdapter(client, default_model="gpt-4o-mini")
+    return adapter, stream, client.completions
 
 
 def test_stream_emits_token_events_and_final_event() -> None:
-    chunks = [
-        {"choices": [{"index": 0, "delta": {"content": "Hello"}}]},
-        {"choices": [{"index": 0, "delta": {"content": ", world"}}]},
-        {
-            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-            "usage": {"total_tokens": 4},
-        },
-    ]
+    adapter, stream, completions = _build_adapter(openai_fake.token_only_chunks())
 
-    client, stream = build_streaming_client(chunks)
-    adapter = OpenAIAdapter(client, default_model="gpt-4o-mini")
-
-    messages = [
-        Message(role=MessageRole.SYSTEM, content="Greeter"),
-        Message(role=MessageRole.USER, content="Say hi"),
-    ]
-
-    events = _gather_stream_events(adapter, messages)
+    events = collect(
+        adapter,
+        prompt="Say hi",
+        system_prompt="Greeter",
+    )
 
     assert events == [
-        TokenEvent(content="Hello", index=0),
-        TokenEvent(content=", world", index=1),
-        FinalEvent(output="Hello, world", total_tokens=4),
+        BaseEvent.token(content="Hello", index=0),
+        BaseEvent.token(content=", world", index=1),
+        BaseEvent.final(output="Hello, world", total_tokens=4),
     ]
 
-    [call] = client.completions.calls
+    [call] = completions.calls
     assert call["stream"] is True
     assert stream.closed
 
 
 def test_stream_tool_call_flow_matches_mock_iterator() -> None:
-    chunks = [
-        {"choices": [{"index": 0, "delta": {"content": "Calling calculator"}}]},
-        {
-            "choices": [
-                {
-                    "index": 0,
-                    "delta": {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "tool-1",
-                                "type": "function",
-                                "function": {"name": "sum", "arguments": '{"a": 1'},
-                            }
-                        ]
-                    },
-                }
-            ]
-        },
-        {
-            "choices": [
-                {
-                    "index": 0,
-                    "delta": {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "function": {"arguments": ', "b": 3}'},
-                            }
-                        ]
-                    },
-                    "finish_reason": "tool_calls",
-                }
-            ]
-        },
-        {"tool_result": {"id": "tool-1", "output": "Sum is 4"}},
-        {
-            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-            "usage": {"total_tokens": 6},
-        },
-    ]
+    adapter, stream, completions = _build_adapter(openai_fake.tool_call_chunks())
 
-    client, stream = build_streaming_client(chunks)
-    adapter = OpenAIAdapter(client, default_model="gpt-4o-mini")
+    events = collect(
+        adapter,
+        prompt="Add 1 and 3",
+        system_prompt="Calculator",
+    )
 
-    messages = [
-        Message(role=MessageRole.SYSTEM, content="Calculator"),
-        Message(role=MessageRole.USER, content="Add 1 and 3"),
-    ]
-
-    events = _gather_stream_events(adapter, messages)
-    expected = asyncio.run(replay_stream(MockStreamIterator("tool_call")))
+    expected_events = asyncio.run(replay_stream(MockStreamIterator("tool_call")))
+    expected = [BaseEvent.from_stream_event(event) for event in expected_events]
 
     assert events == expected
 
-    [call] = client.completions.calls
+    [call] = completions.calls
     assert call["stream"] is True
     assert stream.closed
