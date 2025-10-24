@@ -22,6 +22,12 @@ from .toolbridge import ToolSpec, tool_specs_to_openai
 from .utils import messages_to_openai, openai_to_messages
 
 
+def create_openai_stream(client: Any, payload: Mapping[str, Any]) -> Any:
+    """Create a streaming iterator using the provided OpenAI client."""
+
+    return client.chat.completions.create(**payload)
+
+
 class OpenAIAdapter(ModelAdapter):
     """Translate Foundry messages to OpenAI's chat completion API."""
 
@@ -114,7 +120,7 @@ class OpenAIAdapter(ModelAdapter):
         request_payload["stream"] = True
 
         try:
-            stream = self._client.chat.completions.create(**request_payload)
+            stream = create_openai_stream(self._client, request_payload)
         except Exception as exc:  # pragma: no cover - transport errors
             msg = "OpenAI client call failed"
             raise AdapterError(msg) from exc
